@@ -23,20 +23,86 @@
 ShimButler
 """
 
+from lsst.log import Log
+
+from lsst.daf.persistence import Butler as FallbackButler
+
 __all__ = ("ShimButler", )
 
+def _fallbackOnFailure(func):
+    """Decorator that wraps a `ShimButler` method and falls back to the
+    corresponding Gen2 `Butler` method when an `Exception` is raised.
+    """
+    def inner(self, *args , **kwargs):
+        try:
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            log = Log.getLogger("lsst.daf.butler.shimButler")
+            log.info("Fallback called for: %s, original call failed with: %s on args=%s, kwargs=%s",
+                func.__name__, e, args, kwargs)
+        fallbackFunc = getattr(self._fallbackButler, func.__name__)
+        return fallbackFunc(*args, **kwargs)
+    return inner
 
 class ShimButler:
-    """Shim around Gen3 Butler that acts as a Gen2 Butler.
+    """Shim around Butler that acts as a Gen2 Butler.
 
-    Parameters
-    ----------
-    butler : `Butler`
-        A Gen3 Butler instance.
+    TODO until implementation is complete we fall back to a Gen2 Butler
+    instance upon receiving an unimplemented call.
     """
-    def __init__(self, butler):
-        self._butler = butler
+    def __init__(self, *args, **kwargs):
+        self._fallbackButler = FallbackButler(*args, **kwargs)
 
+    @_fallbackOnFailure
+    def getKeys(self, datasetType=None, level=None, tag=None):
+        """Get the valid data id keys at or above the given level of hierarchy for the dataset type or the
+        entire collection if None. The dict values are the basic Python types corresponding to the keys (int,
+        float, string).
+
+        Parameters
+        ----------
+        datasetType - string
+            The type of dataset to get keys for, entire collection if None.
+        level - string
+            The hierarchy level to descend to. None if it should not be restricted. Use an empty string if the
+            mapper should lookup the default level.
+        tags - any, or list of any
+            Any object that can be tested to be the same as the tag in a dataId passed into butler input
+            functions. Applies only to input repositories: If tag is specified by the dataId then the repo
+            will only be read from used if the tag in the dataId matches a tag used for that repository.
+
+        Returns
+        -------
+        Returns a dict. The dict keys are the valid data id keys at or above the given level of hierarchy for
+        the dataset type or the entire collection if None. The dict values are the basic Python types
+        corresponding to the keys (int, float, string).
+        """
+        raise NotImplementedError()
+
+    @_fallbackOnFailure
+    def queryMetadata(self, datasetType, format, dataId={}, **rest):
+        """Returns the valid values for one or more keys when given a partial
+        input collection data id.
+
+        Parameters
+        ----------
+        datasetType - string
+            The type of dataset to inquire about.
+        format - str, tuple
+            Key or tuple of keys to be returned.
+        dataId - DataId, dict
+            The partial data id.
+        **rest -
+            Keyword arguments for the partial data id.
+
+        Returns
+        -------
+        A list of valid values or tuples of valid values as specified by the
+        format.
+        """
+        raise NotImplementedError()
+
+    @_fallbackOnFailure
     def datasetExists(self, datasetType, dataId={}, write=False, **rest):
         """Determines if a dataset file exists.
         Parameters
@@ -54,8 +120,9 @@ class ShimButler:
         exists - bool
             True if the dataset exists or is non-file-based.
         """
-        raise NotImplementedError("missing")
+        raise NotImplementedError()
 
+    @_fallbackOnFailure
     def get(self, datasetType, dataId=None, immediate=True, **rest):
         """Retrieves a dataset given an input collection data id.
         Parameters
@@ -72,8 +139,9 @@ class ShimButler:
         -------
             An object retrieved from the dataset (or a proxy for one).
         """
-        raise NotImplementedError("missing")
+        raise NotImplementedError()
 
+    @_fallbackOnFailure
     def put(self, obj, datasetType, dataId={}, doBackup=False, **rest):
         """Persists a dataset given an output collection data id.
         Parameters
@@ -91,4 +159,75 @@ class ShimButler:
         **rest
             Keyword arguments for the data id.
         """
-        raise NotImplementedError("missing")
+        raise NotImplementedError()
+
+    @_fallbackOnFailure
+    def dataRef(self, datasetType, level=None, dataId={}, **rest):
+        """Returns a single ButlerDataRef.
+
+        Given a complete dataId specified in dataId and **rest, find the unique dataset at the given level
+        specified by a dataId key (e.g. visit or sensor or amp for a camera) and return a ButlerDataRef.
+
+        Parameters
+        ----------
+        datasetType - string
+            The type of dataset collection to reference
+        level - string
+            The level of dataId at which to reference
+        dataId - dict
+            The data id.
+        **rest
+            Keyword arguments for the data id.
+
+        Returns
+        -------
+        dataRef - ButlerDataRef
+            ButlerDataRef for dataset matching the data id
+        """
+        raise NotImplementedError()
+
+    def subset(self, datasetType, level=None, dataId={}, **rest):
+        """Return complete dataIds for a dataset type that match a partial (or empty) dataId.
+
+        Given a partial (or empty) dataId specified in dataId and **rest, find all datasets that match the
+        dataId.  Optionally restrict the results to a given level specified by a dataId key (e.g. visit or
+        sensor or amp for a camera).  Return an iterable collection of complete dataIds as ButlerDataRefs.
+        Datasets with the resulting dataIds may not exist; that needs to be tested with datasetExists().
+
+        Parameters
+        ----------
+        datasetType - string
+            The type of dataset collection to subset
+        level - string
+            The level of dataId at which to subset. Use an empty string if the mapper should look up the
+            default level.
+        dataId - dict
+            The data id.
+        **rest
+            Keyword arguments for the data id.
+
+        Returns
+        -------
+        subset - ButlerSubset
+            Collection of ButlerDataRefs for datasets matching the data id.
+
+        Examples
+        -----------
+        To print the full dataIds for all r-band measurements in a source catalog
+        (note that the subset call is equivalent to: `butler.subset('src', dataId={'filter':'r'})`):
+
+        >>> subset = butler.subset('src', filter='r')
+        >>> for data_ref in subset: print(data_ref.dataId)
+        """
+        butlerSubset = self._fallbackButler.subset(datasetType, level=level, dataId=dataId, **rest)
+        butlerSubset.butler = self  # Needs shim too
+        return butlerSubset
+
+    def __getattr__(self, name):
+        """Forwards all unwrapped attributes directly to Gen2 `Butler`.
+        """
+        # Do not forward special members (prevents recursion and other
+        # surprising behavior)
+        if name.startswith("__"):
+            raise AttributeError("Attribute not found")
+        return getattr(self._fallbackButler, name)
