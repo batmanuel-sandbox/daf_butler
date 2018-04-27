@@ -23,8 +23,12 @@
 ShimButler
 """
 
-from lsst.log import Log
+import os
 
+from lsst.log import Log
+from lsst.utils import getPackageDir
+
+from lsst.daf.butler import Config, Butler
 from lsst.daf.persistence import Butler as FallbackButler
 
 __all__ = ("ShimButler", )
@@ -36,7 +40,7 @@ def _fallbackOnFailure(func):
     def inner(self, *args , **kwargs):
         try:
             return func(self, *args, **kwargs)
-        except Exception as e:
+        except NotImplementedError as e:
             log = Log.getLogger("lsst.daf.butler.shimButler")
             log.info("Fallback called for: %s, original call failed with: %s on args=%s, kwargs=%s",
                 func.__name__, e, args, kwargs)
@@ -50,8 +54,40 @@ class ShimButler:
     TODO until implementation is complete we fall back to a Gen2 Butler
     instance upon receiving an unimplemented call.
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, gen3Root=None, **kwargs):
+        if gen3Root is None:
+            raise ValueError("Need gen3Root to construct ShimButler")
+        butlerConfig = Config()
+        butlerConfig["run"] = "ci_hsc"
+        butlerConfig["registry.cls"] = "lsst.daf.butler.registries.sqliteRegistry.SqliteRegistry"
+        butlerConfig["registry.db"] = "sqlite:///{}/gen3.sqlite3".format(gen3Root)
+        butlerConfig["registry.schema"] = os.path.join(getPackageDir("daf_butler"),
+                                                    "config/registry/default_schema.yaml")
+        butlerConfig["storageClasses.config"] = os.path.join(getPackageDir("daf_butler"),
+                                                            "config/registry/storageClasses.yaml")
+        butlerConfig["datastore.cls"] = "lsst.daf.butler.datastores.posixDatastore.PosixDatastore"
+        butlerConfig["datastore.root"] = gen3Root
+        butlerConfig["datastore.create"] = True
+        butlerConfig["datastore.formatters"] = {
+            "SourceCatalog": "lsst.daf.butler.formatters.fitsCatalogFormatter.FitsCatalogFormatter",
+            "ImageF": "lsst.daf.butler.formatters.fitsCatalogFormatter.FitsCatalogFormatter",
+            "MaskX": "lsst.daf.butler.formatters.fitsCatalogFormatter.FitsCatalogFormatter",
+            "Exposure": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
+            "ExposureF": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
+            "ExposureI": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
+        }
+        self._butler = Butler(butlerConfig)
         self._fallbackButler = FallbackButler(*args, **kwargs)
+
+    def _mapDatasetType(self, datasetType):
+        log = Log.getLogger("lsst.daf.butler.shimButler")
+        log.info("mapping datasetType: %s", datasetType)
+        return datasetType
+
+    def _mapDataId(self, dataId):
+        log = Log.getLogger("lsst.daf.butler.shimButler")
+        log.info("mapping dataId: %s", dataId)
+        return dataId
 
     @_fallbackOnFailure
     def getKeys(self, datasetType=None, level=None, tag=None):
@@ -159,6 +195,9 @@ class ShimButler:
         **rest
             Keyword arguments for the data id.
         """
+        self._butler.put(obj,
+                         datasetType=self._mapDatasetType(datasetType),
+                         dataId=self._mapDataId(dataId))
         raise NotImplementedError()
 
     @_fallbackOnFailure
