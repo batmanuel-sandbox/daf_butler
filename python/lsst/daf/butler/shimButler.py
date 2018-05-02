@@ -27,26 +27,168 @@ import os
 
 from lsst.log import Log
 from lsst.utils import getPackageDir
-
-from lsst.daf.butler import Config, Butler
 from lsst.daf.persistence import Butler as FallbackButler
 
+from lsst.daf.butler import Config, Butler
+from lsst.daf.butler.gen2convert.structures import Gen2DatasetType
+from lsst.daf.butler.gen2convert.translators import Translator
+import re
+
+from lsst.daf.butler.instrument import Instrument
+from lsst.daf.butler.gen2convert import KeyHandler
+from lsst.daf.butler.gen2convert import ConstantKeyHandler, CopyKeyHandler
+
+__all__ = ("HyperSuprimeCam",)
+
+
+# Regular expression that matches HSC PhysicalFilter names (the same as Gen2
+# filternames), with a group that can be lowercased to yield the
+# associated AbstractFilter.
+FILTER_REGEX = re.compile(r"HSC\-([GRIZY])2?")
+
+
+class HyperSuprimeCam(Instrument):
+    """Gen3 Butler specialization class for Subaru's Hyper Suprime-Cam.
+
+    The current implementation simply retrieves the information it needs
+    from a Gen2 HscMapper instance (the only constructor argument).  This
+    will obviously need to be changed before Gen2 is retired, but it avoids
+    duplication for now.
+    """
+
+    camera = "HSC"
+
+    def __init__(self, mapper):
+        self.sensors = [
+            dict(
+                sensor=sensor.getId(),
+                name=sensor.getName(),
+                # getType() returns a pybind11-wrapped enum, which
+                # unfortunately has no way to extract the name of just
+                # the value (it's always prefixed by the enum type name).
+                purpose=str(sensor.getType()).split(".")[-1],
+                # The most useful grouping of sensors in HSC is by their
+                # orientation w.r.t. the focal plane, so that's what
+                # we put in the 'group' field.
+                group="NQUARTER{:d}".format(sensor.getOrientation().getNQuarter() % 4)
+            )
+            for sensor in mapper.camera
+        ]
+        self.physicalFilters = []
+        for name in mapper.filters:
+            # We use one of grizy for the abstract filter, when appropriate,
+            # which we identify as when the physical filter starts with
+            # "HSC-[GRIZY]".  Note that this means that e.g. "HSC-I" and
+            # "HSC-I2" are both mapped to abstract filter "i".
+            m = FILTER_REGEX.match(name)
+            self.physicalFilters.append(
+                dict(
+                    physical_filter=name,
+                    abstract_filter=m.group(1).lower() if m is not None else None
+                )
+            )
+
+
+class HscAbstractFilterKeyHandler(KeyHandler):
+    """KeyHandler for HSC filter keys that should be mapped to AbstractFilters.
+    """
+
+    __slots__ = ()
+
+    def __init__(self):
+        super().__init__("abstract_filter", "AbstractFilter")
+
+    def extract(self, gen2id, skyMap, skyMapName):
+        physical = gen2id["filter"]
+        m = FILTER_REGEX.match(physical)
+        if m:
+            return m.group(1).lower()
+        return physical
+
+
+class HscPhysicalFilterKeyHandler(KeyHandler):
+    """KeyHandler for HSC filter keys that should be mapped to PhysicalFilters.
+    """
+
+    __slots__ = ()
+
+    def __init__(self):
+        super().__init__("physical_filter", "PhysicalFilter")
+
+    def extract(self, gen2id, skyMap, skyMapName):
+        return gen2id["filter"]
+
+
+# Add camera to Gen3 data ID if Gen2 contains "visit" or "ccd".
+# (Both rules will match, so we'll actually set camera in the same dict twice).
+Translator.addRule(ConstantKeyHandler("camera", "Camera", "HSC"),
+                   camera="HSC", gen2keys=("visit",), consume=False)
+Translator.addRule(ConstantKeyHandler("camera", "Camera", "HSC"),
+                   camera="HSC", gen2keys=("ccd",), consume=False)
+
+# Copy Gen2 'visit' to Gen3 'exposure' for raw only.
+Translator.addRule(CopyKeyHandler("exposure", "Exposure", "visit"),
+                   camera="HSC", datasetTypeName="raw", gen2keys=("visit",))
+
+# Copy Gen2 'visit' to Gen3 'visit' otherwise
+Translator.addRule(CopyKeyHandler("visit", "Visit"), camera="HSC", gen2keys=("visit",))
+
+# Copy Gen2 'ccd' to Gen3 'sensor;
+Translator.addRule(CopyKeyHandler("sensor", "Sensor", "ccd"), camera="HSC", gen2keys=("ccd",))
+
+# Translate Gen2 `filter` to AbstractFilter iff Gen2 data ID contains "tract".
+Translator.addRule(HscAbstractFilterKeyHandler(), camera="HSC", gen2keys=("tract", "filter"),
+                   consume=("filter",))
+Translator.addRule(HscPhysicalFilterKeyHandler(), camera="HSC", gen2keys=("filter"))
+
+CAMERA = "HSC"
+
+DATASET_TYPES = {}
+for name in ["icSrc", "src", "calexp"]:
+    DATASET_TYPES[name] = Gen2DatasetType(name, {'visit': int, 'ccd': int, 'field': str,
+                                                 'dateObs': str, 'pointing': int, 'filter': str,
+                                                 'taiObs': str, 'expTime': float}, None, None)
+
+TRANSLATORS = {}
+for name in ['icSrc', 'src', "calexp"]:
+    TRANSLATORS[name] = Translator.makeMatching(
+        camera=CAMERA, datasetType=DATASET_TYPES[name], skyMapNames={}, skyMaps={})
+
+SCHEMAS = [
+    # "deepCoadd_ref_schema",
+    # "deepCoadd_mergeDet_schema",
+    # "deepCoadd_det_schema",
+    # "deepCoadd_meas_schema",
+    # "deepCoadd_forced_src_schema",
+    "src_schema",
+    "forced_src_schema",
+    "icSrc_schema"
+]
+
+for schemaName in SCHEMAS:
+    DATASET_TYPES[schemaName] = Gen2DatasetType(schemaName, {}, None, None)
+    TRANSLATORS[schemaName] = Translator.makeMatching(
+        camera=CAMERA, datasetType=DATASET_TYPES[schemaName], skyMapNames={}, skyMaps={})
+
 __all__ = ("ShimButler", )
+
 
 def _fallbackOnFailure(func):
     """Decorator that wraps a `ShimButler` method and falls back to the
     corresponding Gen2 `Butler` method when an `Exception` is raised.
     """
-    def inner(self, *args , **kwargs):
+
+    def inner(self, *args, **kwargs):
         try:
             return func(self, *args, **kwargs)
         except NotImplementedError as e:
             log = Log.getLogger("lsst.daf.butler.shimButler")
             log.info("Fallback called for: %s, original call failed with: %s on args=%s, kwargs=%s",
-                func.__name__, e, args, kwargs)
+                     func.__name__, e, args, kwargs)
         fallbackFunc = getattr(self._fallbackButler, func.__name__)
         return fallbackFunc(*args, **kwargs)
     return inner
+
 
 class ShimButler:
     """Shim around Butler that acts as a Gen2 Butler.
@@ -54,6 +196,7 @@ class ShimButler:
     TODO until implementation is complete we fall back to a Gen2 Butler
     instance upon receiving an unimplemented call.
     """
+
     def __init__(self, *args, gen3Root=None, **kwargs):
         if gen3Root is None:
             raise ValueError("Need gen3Root to construct ShimButler")
@@ -62,9 +205,9 @@ class ShimButler:
         butlerConfig["registry.cls"] = "lsst.daf.butler.registries.sqliteRegistry.SqliteRegistry"
         butlerConfig["registry.db"] = "sqlite:///{}/gen3.sqlite3".format(gen3Root)
         butlerConfig["registry.schema"] = os.path.join(getPackageDir("daf_butler"),
-                                                    "config/registry/default_schema.yaml")
+                                                       "config/registry/default_schema.yaml")
         butlerConfig["storageClasses.config"] = os.path.join(getPackageDir("daf_butler"),
-                                                            "config/registry/storageClasses.yaml")
+                                                             "config/registry/storageClasses.yaml")
         butlerConfig["datastore.cls"] = "lsst.daf.butler.datastores.posixDatastore.PosixDatastore"
         butlerConfig["datastore.root"] = gen3Root
         butlerConfig["datastore.create"] = True
@@ -76,6 +219,8 @@ class ShimButler:
             "ExposureF": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
             "ExposureI": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
         }
+        butlerConfig["datastore.templates.default"] = \
+            "{datasetType}/{tract:?}/{patch:?}/{filter:?}/{camera:?}_{visit:?}"
         self._butler = Butler(butlerConfig)
         self._fallbackButler = FallbackButler(*args, **kwargs)
 
@@ -84,10 +229,16 @@ class ShimButler:
         log.info("mapping datasetType: %s", datasetType)
         return datasetType
 
-    def _mapDataId(self, dataId):
+    def _mapDataId(self, datasetType, dataId):
         log = Log.getLogger("lsst.daf.butler.shimButler")
-        log.info("mapping dataId: %s", dataId)
-        return dataId
+        log.info("mapping datasetType: %s with dataId: %s", datasetType, dataId)
+        if "Coadd" in datasetType:
+            raise NotImplementedError(
+                "Skipping {}, do not know what to do with Coadds yet".format(datasetType))
+        newId = TRANSLATORS[datasetType](dataId)
+        newId["camera"] = "HSC"
+        log.info("mapped datasetType %s with dataId %s to %s", datasetType, dataId, newId)
+        return newId
 
     @_fallbackOnFailure
     def getKeys(self, datasetType=None, level=None, tag=None):
@@ -195,9 +346,18 @@ class ShimButler:
         **rest
             Keyword arguments for the data id.
         """
+        try:
+            self._butler.registry.getDatasetType(datasetType)
+        except KeyError:
+            raise NotImplementedError("Skipped, do not have DatasetType {}".format(datasetType))
+        inputId = dataId.copy()
+        dataId.update(**rest)
         self._butler.put(obj,
                          datasetType=self._mapDatasetType(datasetType),
-                         dataId=self._mapDataId(dataId))
+                         dataId=self._mapDataId(datasetType, inputId))
+        log = Log.getLogger("lsst.daf.butler.shimButler")
+        log.info("Succeeded in put of datasetType: {} with dataId: {}, rest: {}".format(datasetType,
+                                                                                        inputId, rest))
         raise NotImplementedError()
 
     @_fallbackOnFailure
