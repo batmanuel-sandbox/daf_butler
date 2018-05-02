@@ -46,15 +46,11 @@ class ButlerTestCase(lsst.utils.tests.TestCase):
     """
 
     @staticmethod
-    def registerDatasetTypes(datasetTypeName, dataUnits, storageClass, registry):
-        """Bulk register DatasetTypes
+    def addDatasetType(datasetTypeName, dataUnits, storageClass, registry):
+        """Create a DatasetType and register it
         """
         datasetType = DatasetType(datasetTypeName, dataUnits, storageClass)
         registry.registerDatasetType(datasetType)
-
-        for compName, compStorageClass in storageClass.components.items():
-            compType = DatasetType(datasetType.componentTypeName(compName), dataUnits, compStorageClass)
-            registry.registerDatasetType(compType)
 
     @classmethod
     def setUpClass(cls):
@@ -81,7 +77,7 @@ class ButlerTestCase(lsst.utils.tests.TestCase):
         datasetTypeName = "test_metric"
         dataUnits = ("Camera", "Visit")
         storageClass = self.storageClassFactory.getStorageClass("StructuredData")
-        self.registerDatasetTypes(datasetTypeName, dataUnits, storageClass, butler.registry)
+        self.addDatasetType(datasetTypeName, dataUnits, storageClass, butler.registry)
 
         # Create and store a dataset
         metric = makeExampleMetrics()
@@ -105,7 +101,7 @@ class ButlerTestCase(lsst.utils.tests.TestCase):
         datasetTypeName = "test_metric_comp"
         dataUnits = ("Camera", "Visit")
         storageClass = self.storageClassFactory.getStorageClass("StructuredComposite")
-        self.registerDatasetTypes(datasetTypeName, dataUnits, storageClass, butler.registry)
+        self.addDatasetType(datasetTypeName, dataUnits, storageClass, butler.registry)
 
         # Create and store a dataset
         metric = makeExampleMetrics()
