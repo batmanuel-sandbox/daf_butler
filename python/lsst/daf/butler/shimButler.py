@@ -206,8 +206,8 @@ class ShimButler:
         butlerConfig["registry.db"] = "sqlite:///{}/gen3.sqlite3".format(gen3Root)
         butlerConfig["registry.schema"] = os.path.join(getPackageDir("daf_butler"),
                                                        "config/registry/default_schema.yaml")
-        butlerConfig["storageClasses.config"] = os.path.join(getPackageDir("daf_butler"),
-                                                             "config/registry/storageClasses.yaml")
+        butlerConfig["storageClasses.config"] = os.path.join(getPackageDir("ci_hsc"),
+                                                             "storageClasses.yaml")
         butlerConfig["datastore.cls"] = "lsst.daf.butler.datastores.posixDatastore.PosixDatastore"
         butlerConfig["datastore.root"] = gen3Root
         butlerConfig["datastore.create"] = True
