@@ -24,6 +24,7 @@
 
 import os
 import unittest
+import pickle
 
 import lsst.utils.tests
 
@@ -118,6 +119,13 @@ class ButlerTestCase(lsst.utils.tests.TestCase):
         # Check we can get components
         self.assertGetComponents(butler, datasetTypeName, dataId,
                                  ("summary", "data", "output"), metric)
+
+    def testPickle(self):
+        """Test pickle support.
+        """
+        butler = Butler(self.configFile)
+        butlerOut = pickle.loads(pickle.dumps(butler))
+        self.assertIsInstance(butlerOut, Butler)
 
 
 class MemoryTester(lsst.utils.tests.MemoryTestCase):
