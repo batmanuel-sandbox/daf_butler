@@ -149,8 +149,13 @@ for name in ["icSrc", "src", "calexp"]:
                                                  'dateObs': str, 'pointing': int, 'filter': str,
                                                  'taiObs': str, 'expTime': float}, None, None)
 
+for name in ["calexp_camera", ]:
+    DATASET_TYPES[name] = Gen2DatasetType(name, {'visit': int, 'field': str,
+                                                 'dateObs': str, 'pointing': int, 'filter': str,
+                                                 'taiObs': str, 'expTime': float}, None, None)
+
 TRANSLATORS = {}
-for name in ['icSrc', 'src', "calexp"]:
+for name in ['icSrc', 'src', "calexp", "calexp_camera"]:
     TRANSLATORS[name] = Translator.makeMatching(
         camera=CAMERA, datasetType=DATASET_TYPES[name], skyMapNames={}, skyMaps={})
 
@@ -326,7 +331,24 @@ class ShimButler:
         -------
             An object retrieved from the dataset (or a proxy for one).
         """
-        raise NotImplementedError()
+        try:
+            self._butler.registry.getDatasetType(datasetType)
+        except KeyError:
+            raise NotImplementedError("Skipped, do not have DatasetType {}".format(datasetType))
+        if dataId is None:
+            inputId = {}
+        else:
+            inputId = dataId.copy()
+        inputId.update(**rest)
+        value = self._butler.get(datasetType=self._mapDatasetType(datasetType),
+                                 dataId=self._mapDataId(datasetType, inputId))
+        log = Log.getLogger("lsst.daf.butler.shimButler")
+        log.info("Succeeded in get of datasetType: {} with dataId: {}, rest: {}, returns: {}".format(
+            datasetType,
+            inputId,
+            rest,
+            value))
+        return value
 
     @_fallbackOnFailure
     def put(self, obj, datasetType, dataId={}, doBackup=False, **rest):
@@ -350,8 +372,11 @@ class ShimButler:
             self._butler.registry.getDatasetType(datasetType)
         except KeyError:
             raise NotImplementedError("Skipped, do not have DatasetType {}".format(datasetType))
-        inputId = dataId.copy()
-        dataId.update(**rest)
+        if dataId is None:
+            inputId = {}
+        else:
+            inputId = dataId.copy()
+        inputId.update(**rest)
         self._butler.put(obj,
                          datasetType=self._mapDatasetType(datasetType),
                          dataId=self._mapDataId(datasetType, inputId))
