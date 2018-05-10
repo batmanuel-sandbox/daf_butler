@@ -26,12 +26,12 @@ ShimButler
 import os
 
 from lsst.log import Log
-from lsst.utils import getPackageDir
-from lsst.daf.persistence import Butler as FallbackButler
 
 from lsst.daf.butler import Config, Butler
 from lsst.daf.butler.gen2convert.structures import Gen2DatasetType
 from lsst.daf.butler.gen2convert.translators import Translator
+from lsst.daf.persistence import Butler as FallbackButler
+
 import re
 
 from lsst.daf.butler.instrument import Instrument
@@ -141,39 +141,6 @@ Translator.addRule(HscAbstractFilterKeyHandler(), camera="HSC", gen2keys=("tract
                    consume=("filter",))
 Translator.addRule(HscPhysicalFilterKeyHandler(), camera="HSC", gen2keys=("filter"))
 
-CAMERA = "HSC"
-
-DATASET_TYPES = {}
-for name in ["icSrc", "src", "calexp"]:
-    DATASET_TYPES[name] = Gen2DatasetType(name, {'visit': int, 'ccd': int, 'field': str,
-                                                 'dateObs': str, 'pointing': int, 'filter': str,
-                                                 'taiObs': str, 'expTime': float}, None, None)
-
-for name in ["calexp_camera", ]:
-    DATASET_TYPES[name] = Gen2DatasetType(name, {'visit': int, 'field': str,
-                                                 'dateObs': str, 'pointing': int, 'filter': str,
-                                                 'taiObs': str, 'expTime': float}, None, None)
-
-TRANSLATORS = {}
-for name in ['icSrc', 'src', "calexp", "calexp_camera"]:
-    TRANSLATORS[name] = Translator.makeMatching(
-        camera=CAMERA, datasetType=DATASET_TYPES[name], skyMapNames={}, skyMaps={})
-
-SCHEMAS = [
-    # "deepCoadd_ref_schema",
-    # "deepCoadd_mergeDet_schema",
-    # "deepCoadd_det_schema",
-    # "deepCoadd_meas_schema",
-    # "deepCoadd_forced_src_schema",
-    "src_schema",
-    "forced_src_schema",
-    "icSrc_schema"
-]
-
-for schemaName in SCHEMAS:
-    DATASET_TYPES[schemaName] = Gen2DatasetType(schemaName, {}, None, None)
-    TRANSLATORS[schemaName] = Translator.makeMatching(
-        camera=CAMERA, datasetType=DATASET_TYPES[schemaName], skyMapNames={}, skyMaps={})
 
 __all__ = ("ShimButler", )
 
@@ -195,39 +162,25 @@ def _fallbackOnFailure(func):
     return inner
 
 
-class ShimButler:
+class ShimButlerMeta(type):
+    """Metaclass for ShimButler to also forward static and classmethods to
+    the FallbackButler.
+    """
+    def __getattr__(cls, name):
+        return getattr(FallbackButler, name)
+
+
+class ShimButler(metaclass=ShimButlerMeta):
     """Shim around Butler that acts as a Gen2 Butler.
 
     TODO until implementation is complete we fall back to a Gen2 Butler
     instance upon receiving an unimplemented call.
     """
-
-    def __init__(self, *args, gen3Root=None, **kwargs):
-        if gen3Root is None:
-            raise ValueError("Need gen3Root to construct ShimButler")
-        butlerConfig = Config()
-        butlerConfig["run"] = "ci_hsc"
-        butlerConfig["registry.cls"] = "lsst.daf.butler.registries.sqliteRegistry.SqliteRegistry"
-        butlerConfig["registry.db"] = "sqlite:///{}/gen3.sqlite3".format(gen3Root)
-        butlerConfig["registry.schema"] = os.path.join(getPackageDir("daf_butler"),
-                                                       "config/registry/default_schema.yaml")
-        butlerConfig["storageClasses.config"] = os.path.join(getPackageDir("ci_hsc"),
-                                                             "storageClasses.yaml")
-        butlerConfig["datastore.cls"] = "lsst.daf.butler.datastores.posixDatastore.PosixDatastore"
-        butlerConfig["datastore.root"] = gen3Root
-        butlerConfig["datastore.create"] = True
-        butlerConfig["datastore.formatters"] = {
-            "SourceCatalog": "lsst.daf.butler.formatters.fitsCatalogFormatter.FitsCatalogFormatter",
-            "ImageF": "lsst.daf.butler.formatters.fitsCatalogFormatter.FitsCatalogFormatter",
-            "MaskX": "lsst.daf.butler.formatters.fitsCatalogFormatter.FitsCatalogFormatter",
-            "Exposure": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
-            "ExposureF": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
-            "ExposureI": "lsst.daf.butler.formatters.fitsExposureFormatter.FitsExposureFormatter",
-        }
-        butlerConfig["datastore.templates.default"] = \
-            "{datasetType}/{tract:?}/{patch:?}/{filter:?}/{camera:?}_{visit:?}"
-        self._butler = Butler(butlerConfig)
-        self._fallbackButler = FallbackButler(*args, **kwargs)
+    def __init__(self, butler, fallbackButler=None):
+        self._butler = butler
+        self._fallbackButler = fallbackButler
+        self._translators = {}
+        self._camera = "HSC"
 
     def _mapDatasetType(self, datasetType):
         log = Log.getLogger("lsst.daf.butler.shimButler")
@@ -240,8 +193,18 @@ class ShimButler:
         if "Coadd" in datasetType:
             raise NotImplementedError(
                 "Skipping {}, do not know what to do with Coadds yet".format(datasetType))
-        newId = TRANSLATORS[datasetType](dataId)
-        newId["camera"] = "HSC"
+        # Make (or look up) a Translator to go from Gen2 -> Gen3 DataId
+        if datasetType not in self._translators:
+            gen2dst = Gen2DatasetType(name=datasetType,
+                                      keys={k: type(v) for k, v in dataId.items()},
+                                      persistable=None,
+                                      python=None)
+            self._translators[datasetType] = Translator.makeMatching(camera=self._camera,
+                                                                     datasetType=gen2dst,
+                                                                     skyMapNames={},
+                                                                     skyMaps={})
+        newId = self._translators[datasetType](dataId)
+        newId["camera"] = self._camera  # TODO this should be added automatically?
         log.info("mapped datasetType %s with dataId %s to %s", datasetType, dataId, newId)
         return newId
 
@@ -331,17 +294,24 @@ class ShimButler:
         -------
             An object retrieved from the dataset (or a proxy for one).
         """
-        try:
-            self._butler.registry.getDatasetType(datasetType)
-        except KeyError:
-            raise NotImplementedError("Skipped, do not have DatasetType {}".format(datasetType))
         if dataId is None:
             inputId = {}
         else:
             inputId = dataId.copy()
         inputId.update(**rest)
+        try:
+            self._butler.registry.getDatasetType(datasetType)
+        except KeyError:
+            with open("get.txt", "a") as f:
+                f.write("{}, {}\n".format(datasetType, {k: str(type(v)) for k, v in inputId.items()}))
+            raise NotImplementedError("Skipped, do not have DatasetType {}".format(datasetType))
         value = self._butler.get(datasetType=self._mapDatasetType(datasetType),
                                  dataId=self._mapDataId(datasetType, inputId))
+        # Exposure needs to have detector set which is not persistable (yet).
+        # The only way to get it currently is from the fallback butler.
+        if hasattr(value, 'setDetector'):
+            camera = self._fallbackButler.get('camera')
+            value.setDetector(camera[int(inputId['ccd'])])
         log = Log.getLogger("lsst.daf.butler.shimButler")
         log.info("Succeeded in get of datasetType: {} with dataId: {}, rest: {}, returns: {}".format(
             datasetType,
@@ -368,15 +338,17 @@ class ShimButler:
         **rest
             Keyword arguments for the data id.
         """
-        try:
-            self._butler.registry.getDatasetType(datasetType)
-        except KeyError:
-            raise NotImplementedError("Skipped, do not have DatasetType {}".format(datasetType))
         if dataId is None:
             inputId = {}
         else:
             inputId = dataId.copy()
         inputId.update(**rest)
+        try:
+            self._butler.registry.getDatasetType(datasetType)
+        except KeyError:
+            with open("put.txt", "a") as f:
+                f.write("{}, {}\n".format(datasetType, {k: str(type(v)) for k, v in inputId.items()}))
+            raise NotImplementedError("Skipped, do not have DatasetType {}".format(datasetType))
         self._butler.put(obj,
                          datasetType=self._mapDatasetType(datasetType),
                          dataId=self._mapDataId(datasetType, inputId))
@@ -453,5 +425,5 @@ class ShimButler:
         # Do not forward special members (prevents recursion and other
         # surprising behavior)
         if name.startswith("__"):
-            raise AttributeError("Attribute not found")
+            raise AttributeError()
         return getattr(self._fallbackButler, name)
