@@ -50,7 +50,7 @@ class PexConfigFormatter(FileFormatter):
         if not os.path.exists(path):
             return None
         instance = pytype()
-        instance.read(path)
+        instance.load(path)
         return instance
 
     def _writeFile(self, inMemoryDataset, fileDescriptor):
