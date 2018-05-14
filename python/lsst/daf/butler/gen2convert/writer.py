@@ -193,7 +193,6 @@ class ConversionWriter:
         self.insertObservations(registry)
         self.insertDatasetTypes(registry)
         self.insertDatasets(registry, datastore)
-        # TODO: associate parent repo datasets with child repo Collections
 
     def checkCameras(self, registry):
         """Check that all necessary Cameras are already present in the
@@ -303,6 +302,7 @@ class ConversionWriter:
         """
         log = Log.getLogger("lsst.daf.butler.gen2convert")
         for repo in self.repos.values():
+            refs = []
             for datasetTypeName, datasets in repo.gen2.datasets.items():
                 datasetType = self.datasetTypes.get(datasetTypeName, None)
                 if datasetType is None:
@@ -326,3 +326,12 @@ class ConversionWriter:
                     log.debug("Adding Dataset %s as %s in %s", dataset.filePath, gen3id, repo.run)
                     ref = registry.addDataset(datasetType, gen3id, run)
                     datastore.ingest(path=os.path.relpath(dataset.fullPath, start=datastore.root), ref=ref)
+                    refs.append(ref)
+            # Add Datasets to collections associated with any child repos to similate Gen2 parent lookups.
+            # TODO: only associated parent Datasets with DataUnits associated with DataUnits used by child
+            #       repo Datasets.
+            for potentialChildRepo in self.repos.values():
+                if repo.gen2.isRecursiveParentOf(potentialChildRepo.gen2):
+                    log.info("Adding Datasets from %s to child collection %s.", repo.gen2.root,
+                             potentialChildRepo.run.collection)
+                    registry.associate(potentialChildRepo.run.collection, refs)
