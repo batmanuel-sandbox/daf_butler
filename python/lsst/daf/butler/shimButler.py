@@ -190,9 +190,15 @@ class ShimButler(metaclass=ShimButlerMeta):
     def _mapDataId(self, datasetType, dataId):
         log = Log.getLogger("lsst.daf.butler.shimButler")
         log.info("mapping datasetType: %s with dataId: %s", datasetType, dataId)
+        if "raw" == datasetType:
+            raise NotImplementedError(
+                "Skipping {}, do not know what to do with raw yet".format(datasetType))
         if "Coadd" in datasetType:
             raise NotImplementedError(
                 "Skipping {}, do not know what to do with Coadds yet".format(datasetType))
+        if "config" in datasetType:
+            raise NotImplementedError(
+                "Skipping {}, do not know what to do with configs yet".format(datasetType))
         # Make (or look up) a Translator to go from Gen2 -> Gen3 DataId
         if datasetType not in self._translators:
             gen2dst = Gen2DatasetType(name=datasetType,
