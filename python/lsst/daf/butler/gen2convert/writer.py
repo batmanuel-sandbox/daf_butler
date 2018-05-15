@@ -327,9 +327,18 @@ class ConversionWriter:
                     ref = registry.addDataset(datasetType, gen3id, run)
                     datastore.ingest(path=os.path.relpath(dataset.fullPath, start=datastore.root), ref=ref)
                     refs.append(ref)
-            # Add Datasets to collections associated with any child repos to similate Gen2 parent lookups.
-            # TODO: only associated parent Datasets with DataUnits associated with DataUnits used by child
-            #       repo Datasets.
+
+            # Add Datasets to collections associated with any child repos to
+            # simulate Gen2 parent lookups.
+
+            # TODO: The Gen2 behavior is to associate *everything* from the
+            #       parent repo, because it's a repo-level link.  In Gen3, we
+            #       want to limit to that to just the "relevant" datasets -
+            #       which we probably define to be those in the full
+            #       provenance tree of anything in the child repo.  Right now,
+            #       the conversion behavior is the Gen2 behavior, which could
+            #       get very expensive in the common case where we have a very
+            #       large parent repo with many small child repos.
             for potentialChildRepo in self.repos.values():
                 if repo.gen2.isRecursiveParentOf(potentialChildRepo.gen2):
                     log.info("Adding Datasets from %s to child collection %s.", repo.gen2.root,
