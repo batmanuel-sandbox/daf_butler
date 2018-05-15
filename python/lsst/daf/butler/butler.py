@@ -86,30 +86,33 @@ class Butler:
         self.storageClasses = StorageClassFactory()
         self.storageClasses.addFromConfig(self.config)
         if run is None:
-            run = self.config.get("run", None)
+            runCollection = self.config.get("run", None)
         else:
             if isinstance(run, Run):
                 self.run = run
-                run = self.run.collection
+                runCollection = self.run.collection
             else:
+                runCollection = run
                 self.run = None
             # if run *arg* is not None and collection arg is, use run for collecion.
             if collection is None:
-                collection = run
-        # n.b. at this point, 'run' is a str or None; 'self.run' is a Run or None
+                collection = runCollection
+        del run  # it's a logic bug if we try to use this variable below
         if collection is None:  # didn't get a collection from collection or run *args*
             collection = self.config.get("collection", None)
             if collection is None:  # didn't get a collection from config['collection']
-                collection = run    # get collection from run found in config
+                collection = runCollection    # get collection from run found in config
         if collection is None:
             raise ValueError("No run or collection provided.")
-        if run is not None and collection != run:
-            raise ValueError("Run ({}) and collection ({}) are inconsistent.".format(run, collection))
+        if runCollection is not None and collection != runCollection:
+            raise ValueError(
+                "Run ({}) and collection ({}) are inconsistent.".format(runCollection, collection)
+            )
         self.collection = collection
-        if run is not None and self.run is None:
-            self.run = self.registry.getRun(collection=run)
+        if runCollection is not None and self.run is None:
+            self.run = self.registry.getRun(collection=runCollection)
             if self.run is None:
-                self.run = self.registry.makeRun(run)
+                self.run = self.registry.makeRun(runCollection)
 
     def put(self, obj, datasetType, dataId, producer=None):
         """Store and register a dataset.
