@@ -62,7 +62,10 @@ class PexConfigFormatter(FileFormatter):
             instance.load(path)
             return instance
         except AssertionError as err:
-            actualPyTypeStr = str(err).split()[-1]
+            msg = str(err)
+            if not msg.startswith("config is of type"):
+                raise RuntimeError("Unexpected assertion; cannot infer Config class type.") from err
+            actualPyTypeStr = msg.split()[-1]
         actualPyType = doImport(actualPyTypeStr)
         instance = actualPyType()
         instance.load(path)
