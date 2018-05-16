@@ -24,6 +24,8 @@ ShimButler
 """
 
 import os
+import pickle
+from collections import defaultdict
 
 from lsst.log import Log
 
@@ -205,10 +207,14 @@ class ShimButler(metaclass=ShimButlerMeta):
                                       keys={k: type(v) for k, v in dataId.items()},
                                       persistable=None,
                                       python=None)
+            skyMapNames = defaultdict(lambda: 'ci_hsc')
+            skyMapNames['calexp'] = 'ci_hsc'
+            with open('./DATA/rerun/ci_hsc/deepCoadd/skyMap.pickle', 'rb') as f:
+                skyMaps = {'ci_hsc': pickle.load(f, encoding='latin1')}
             self._translators[datasetType] = Translator.makeMatching(camera=self._camera,
                                                                      datasetType=gen2dst,
-                                                                     skyMapNames={},
-                                                                     skyMaps={})
+                                                                     skyMapNames=skyMapNames,
+                                                                     skyMaps=skyMaps)
         newId = self._translators[datasetType](dataId)
         newId["camera"] = self._camera  # TODO this should be added automatically?
         log.info("mapped datasetType %s with dataId %s to %s", datasetType, dataId, newId)
